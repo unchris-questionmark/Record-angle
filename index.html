@@ -438,7 +438,8 @@
     dragMode: null,      // null | 'vertex' | 'resize'
     contentRect: {x:0,y:0,w:0,h:0},
     isRecording: false,
-    recStartTime: 0
+    recStartTime: 0,
+    actualFps: 30
   };
 
   function setStatus(msg, isErr){
@@ -468,7 +469,8 @@
         video:{
           facingMode: { ideal: state.facingMode },
           width:{ ideal: 1920 },
-          height:{ ideal: 1080 }
+          height:{ ideal: 1080 },
+          frameRate:{ ideal: 60, min: 30 }
         }
       };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -479,7 +481,10 @@
       idleHint.style.display = 'none';
       readout.style.display = 'block';
       hint2.style.display = 'block';
-      setStatus('');
+      const track = stream.getVideoTracks()[0];
+      const settings = track && track.getSettings ? track.getSettings() : {};
+      state.actualFps = settings.frameRate ? Math.round(settings.frameRate) : 30;
+      setStatus(settings.width ? `相機畫面：${settings.width}×${settings.height}，${state.actualFps} fps` : '');
       computeContentRect();
     }catch(err){
       console.error(err);
@@ -772,11 +777,13 @@
     recCanvas.height = video.videoHeight;
     recCtx = recCanvas.getContext('2d');
 
-    const recStream = recCanvas.captureStream(30);
+    const fps = state.actualFps || 30;
+    const recStream = recCanvas.captureStream(fps);
     const mimeType = pickMimeType();
+    const bitrate = Math.round(8000000 * (fps/30));
     try{
       mediaRecorder = mimeType
-        ? new MediaRecorder(recStream, { mimeType, videoBitsPerSecond: 8000000 })
+        ? new MediaRecorder(recStream, { mimeType, videoBitsPerSecond: bitrate })
         : new MediaRecorder(recStream);
     }catch(err){
       setStatus('無法建立錄影器：'+err.message, true);
