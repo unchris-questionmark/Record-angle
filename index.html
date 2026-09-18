@@ -283,6 +283,43 @@
     min-height:14px;
   }
   #status.err{ color: var(--danger); }
+
+  #recIndicator{
+    position:absolute;
+    top:calc(env(safe-area-inset-top, 0px) + 10px);
+    left:50%;
+    transform:translateX(-50%);
+    display:none;
+    align-items:center;
+    gap:7px;
+    background:rgba(20,23,26,0.78);
+    backdrop-filter: blur(6px);
+    border:1px solid var(--danger);
+    border-radius:999px;
+    padding:6px 13px;
+    pointer-events:none;
+  }
+  #recIndicator .dot{
+    width:9px; height:9px; border-radius:50%;
+    background:var(--danger);
+    animation: recBlink 1s infinite;
+  }
+  #recIndicator .t{
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size:13px; font-weight:600; color:var(--text);
+  }
+  @keyframes recBlink{ 0%,100%{opacity:1;} 50%{opacity:0.25;} }
+
+  .recordBtn{
+    background:var(--panel-2);
+    border:1px solid var(--danger);
+    color:var(--danger);
+  }
+  .recordBtn.on{
+    background:var(--danger);
+    color:#1a0505;
+    font-weight:700;
+  }
 </style>
 </head>
 <body>
@@ -307,7 +344,14 @@
     <div class="val off" id="tiltVal">關閉</div>
   </div>
 
-  <div id="hint2">拖曳十字準星以移動發射點</div>
+  <div id="hint2">按住十字準星拖曳移動發射點・按住量角器外緣拖曳可調整大小</div>
+
+  <div id="recIndicator">
+    <div class="dot"></div>
+    <div class="t" id="recTimer">00:00</div>
+  </div>
+
+  <canvas id="recCanvas" style="display:none;"></canvas>
 </div>
 
 <div id="panel">
@@ -321,13 +365,17 @@
   <div class="row toggleRow">
     <button class="toggle" id="mirrorToggle">⇋ 左右鏡像</button>
     <button class="toggle on" id="protractorToggle">量角器刻度</button>
-    <button class="toggle" id="resetVertexBtn">重設頂點</button>
+    <button class="toggle" id="resetVertexBtn">重設準星/大小</button>
   </div>
 
   <div class="row toggleRow">
     <button class="toggle gyro" id="gyroToggle">📐 陀螺儀水平校正</button>
     <button class="toggle" id="flipCompBtn" style="display:none;">校正方向反轉</button>
     <button class="toggle" id="switchCamBtn">切換鏡頭</button>
+  </div>
+
+  <div class="row toggleRow">
+    <button class="toggle recordBtn" id="recordBtn" style="flex:1 1 100%;">🔴 開始錄影（含角度線）</button>
   </div>
 
   <div id="gyroFine">
@@ -368,6 +416,10 @@
   const gyroFine = document.getElementById('gyroFine');
   const gyroFineSlider = document.getElementById('gyroFineSlider');
   const gyroFineVal = document.getElementById('gyroFineVal');
+  const recordBtn = document.getElementById('recordBtn');
+  const recIndicator = document.getElementById('recIndicator');
+  const recTimer = document.getElementById('recTimer');
+  const recCanvas = document.getElementById('recCanvas');
 
   const NS = "http://www.w3.org/2000/svg";
 
@@ -377,13 +429,16 @@
     angleDeg: 30,
     mirror: 1,          // 1 = 角度線往右上, -1 = 往左上
     vertexR: {x:0.5, y:0.90}, // 相對於「畫面實際內容矩形」的比例座標
+    radiusScale: 1,      // 量角器/角度線長度的縮放倍率
     showProtractor: true,
     gyroOn: false,
     gyroSign: 1,        // 校正方向，若裝置方向不對可反轉
     gyroFineOffset: 0,  // 手動微調 (度)
     currentTilt: 0,      // 目前偵測到的傾斜角
-    dragging: false,
-    contentRect: {x:0,y:0,w:0,h:0}
+    dragMode: null,      // null | 'vertex' | 'resize'
+    contentRect: {x:0,y:0,w:0,h:0},
+    isRecording: false,
+    recStartTime: 0
   };
 
   function setStatus(msg, isErr){
@@ -442,6 +497,7 @@
   startBtn.addEventListener('click', startCamera);
 
   switchCamBtn.addEventListener('click', async ()=>{
+    if(state.isRecording) stopRecording();
     state.facingMode = (state.facingMode === 'environment') ? 'user' : 'environment';
     await startCamera();
   });
@@ -499,6 +555,7 @@
 
   resetVertexBtn.addEventListener('click', ()=>{
     state.vertexR = {x:0.5, y:0.90};
+    state.radiusScale = 1;
   });
 
   /* ---------------- Gyroscope leveling ---------------- */
@@ -569,6 +626,201 @@
     gyroFineVal.textContent = state.gyroFineOffset.toFixed(1)+'°';
   });
 
+  /* ---------------- Recording (video + overlay baked in) ---------------- */
+  let mediaRecorder = null;
+  let recordedChunks = [];
+  let recCtx = null;
+  let recRafId = null;
+
+  function polarLocal(vx, vy, angleDeg, len, mirrorSide){
+    const rad = angleDeg * Math.PI/180;
+    return { x: vx + Math.cos(rad)*len*mirrorSide, y: vy - Math.sin(rad)*len };
+  }
+
+  // Draws the video frame + angle overlay onto the given 2D context, at the
+  // canvas's own native pixel size (no letterboxing needed: cr = full canvas).
+  function drawOverlayOnCanvas(ctx, w, h){
+    ctx.clearRect(0,0,w,h);
+    ctx.drawImage(video, 0, 0, w, h);
+
+    const cr = {x:0, y:0, w, h};
+    const v = { x: cr.x + state.vertexR.x*cr.w, y: cr.y + state.vertexR.y*cr.h };
+    const tilt = currentTiltDeg();
+    const R = baseRadius(cr) * state.radiusScale;
+    const lineLen = Math.max(cr.w, cr.h) * 1.3;
+
+    ctx.save();
+    ctx.translate(v.x, v.y);
+    ctx.rotate(-tilt * Math.PI/180);
+    ctx.translate(-v.x, -v.y);
+
+    // horizontal reference
+    ctx.strokeStyle = '#6fe3c9';
+    ctx.globalAlpha = 0.85;
+    ctx.lineWidth = Math.max(1.5, w*0.0018);
+    ctx.setLineDash([w*0.008, w*0.007]);
+    ctx.beginPath();
+    ctx.moveTo(v.x - lineLen, v.y);
+    ctx.lineTo(v.x + lineLen, v.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+
+    // protractor ticks
+    if(state.showProtractor){
+      ctx.strokeStyle = '#c7ccd1';
+      ctx.fillStyle = '#c7ccd1';
+      ctx.font = Math.round(w*0.013)+'px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      [1,-1].forEach(side=>{
+        for(let d=0; d<=90; d+=5){
+          const major = (d % 15 === 0);
+          const len = major ? R*0.09 : R*0.045;
+          const rad = d*Math.PI/180;
+          const ox = v.x + Math.cos(rad)*R*side;
+          const oy = v.y - Math.sin(rad)*R;
+          const ix = v.x + Math.cos(rad)*(R-len)*side;
+          const iy = v.y - Math.sin(rad)*(R-len);
+          ctx.lineWidth = major ? Math.max(1.4,w*0.0015) : Math.max(0.8,w*0.0008);
+          ctx.beginPath(); ctx.moveTo(ix,iy); ctx.lineTo(ox,oy); ctx.stroke();
+          if(major){
+            const lx = v.x + Math.cos(rad)*(R+R*0.09)*side;
+            const ly = v.y - Math.sin(rad)*(R+R*0.09);
+            ctx.fillText(String(d), lx, ly+4);
+          }
+        }
+        ctx.lineWidth = Math.max(1,w*0.001);
+        ctx.beginPath();
+        ctx.arc(v.x, v.y, R, Math.PI, Math.PI*1.5, side<0);
+        ctx.stroke();
+      });
+    }
+
+    // angle line
+    ctx.strokeStyle = '#ffb454';
+    ctx.lineWidth = Math.max(2.5, w*0.003);
+    ctx.lineCap = 'round';
+    const tip = polarLocal(v.x, v.y, state.angleDeg, lineLen, state.mirror);
+    ctx.beginPath();
+    ctx.moveTo(v.x, v.y);
+    ctx.lineTo(tip.x, tip.y);
+    ctx.stroke();
+
+    // crosshair + vertex circle
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = Math.max(1.5, w*0.0016);
+    const cl = Math.max(11, w*0.012);
+    ctx.beginPath();
+    ctx.moveTo(v.x-cl, v.y); ctx.lineTo(v.x+cl, v.y);
+    ctx.moveTo(v.x, v.y-cl); ctx.lineTo(v.x, v.y+cl);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(v.x, v.y, Math.max(5,w*0.005), 0, Math.PI*2);
+    ctx.stroke();
+
+    ctx.restore();
+
+    // angle label (kept upright, screen space)
+    const rad2 = (-tilt) * Math.PI/180;
+    const tipRotX = v.x + (tip.x-v.x)*Math.cos(rad2) - (tip.y-v.y)*Math.sin(rad2);
+    const tipRotY = v.y + (tip.x-v.x)*Math.sin(rad2) + (tip.y-v.y)*Math.cos(rad2);
+    const txt = state.angleDeg.toFixed(1)+'°';
+    const fontSize = Math.round(w*0.017);
+    ctx.font = fontSize+'px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    const bw = ctx.measureText(txt).width + w*0.014;
+    const lx = Math.max(bw/2, Math.min(w-bw/2, tipRotX));
+    const ly = Math.max(fontSize+6, Math.min(h-8, tipRotY));
+    ctx.fillStyle = 'rgba(20,23,26,0.75)';
+    ctx.fillRect(lx-bw/2, ly-fontSize, bw, fontSize+8);
+    ctx.fillStyle = '#ffb454';
+    ctx.fillText(txt, lx, ly);
+  }
+
+  function drawRecFrame(){
+    if(!state.isRecording) return;
+    drawOverlayOnCanvas(recCtx, recCanvas.width, recCanvas.height);
+    const secs = Math.floor((performance.now() - state.recStartTime)/1000);
+    const mm = String(Math.floor(secs/60)).padStart(2,'0');
+    const ss = String(secs%60).padStart(2,'0');
+    recTimer.textContent = mm+':'+ss;
+    recRafId = requestAnimationFrame(drawRecFrame);
+  }
+
+  function pickMimeType(){
+    const candidates = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm'
+    ];
+    for(const c of candidates){
+      if(window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) return c;
+    }
+    return '';
+  }
+
+  function startRecording(){
+    if(!state.stream || !video.videoWidth){
+      setStatus('請先開啟相機再開始錄影', true);
+      return;
+    }
+    if(!window.MediaRecorder){
+      setStatus('此瀏覽器不支援錄影功能 (MediaRecorder)', true);
+      return;
+    }
+    recCanvas.width = video.videoWidth;
+    recCanvas.height = video.videoHeight;
+    recCtx = recCanvas.getContext('2d');
+
+    const recStream = recCanvas.captureStream(30);
+    const mimeType = pickMimeType();
+    try{
+      mediaRecorder = mimeType
+        ? new MediaRecorder(recStream, { mimeType, videoBitsPerSecond: 8000000 })
+        : new MediaRecorder(recStream);
+    }catch(err){
+      setStatus('無法建立錄影器：'+err.message, true);
+      return;
+    }
+    recordedChunks = [];
+    mediaRecorder.ondataavailable = (e)=>{ if(e.data && e.data.size>0) recordedChunks.push(e.data); };
+    mediaRecorder.onstop = ()=>{
+      const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const ts = new Date();
+      const pad = n=>String(n).padStart(2,'0');
+      const fname = `launch-angle-${ts.getFullYear()}${pad(ts.getMonth()+1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.webm`;
+      a.href = url; a.download = fname;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 15000);
+      recStream.getTracks().forEach(t=>t.stop());
+    };
+
+    mediaRecorder.start(200);
+    state.isRecording = true;
+    state.recStartTime = performance.now();
+    recIndicator.style.display = 'flex';
+    recordBtn.classList.add('on');
+    recordBtn.textContent = '⏹ 停止並下載影片';
+    drawRecFrame();
+  }
+
+  function stopRecording(){
+    if(!state.isRecording) return;
+    state.isRecording = false;
+    if(recRafId) cancelAnimationFrame(recRafId);
+    if(mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    recIndicator.style.display = 'none';
+    recordBtn.classList.remove('on');
+    recordBtn.textContent = '🔴 開始錄影（含角度線）';
+  }
+
+  recordBtn.addEventListener('click', ()=>{
+    if(state.isRecording) stopRecording();
+    else startRecording();
+  });
+
   /* ---------------- Drag vertex ---------------- */
   function clientToContent(clientX, clientY){
     const rect = stage.getBoundingClientRect();
@@ -595,26 +847,60 @@
     };
   }
 
+  function baseRadius(cr){
+    return Math.min(cr.w, cr.h) * 0.42;
+  }
+
+  function currentTiltDeg(){
+    return state.gyroOn ? (state.currentTilt*state.gyroSign + state.gyroFineOffset) : 0;
+  }
+
+  // Rotate a screen point into the "local" (un-tilted) coordinate frame used
+  // to place the resize handle, since that handle sits inside a rotated <g>.
+  function toLocal(px, py, v, tiltDeg){
+    const rad = tiltDeg * Math.PI/180;
+    const dx = px - v.x, dy = py - v.y;
+    return {
+      x: v.x + dx*Math.cos(rad) - dy*Math.sin(rad),
+      y: v.y + dx*Math.sin(rad) + dy*Math.cos(rad)
+    };
+  }
+
+  const HANDLE_HIT = 30; // px, grab radius for touch
+
   let activePointerId = null;
   svg.addEventListener('pointerdown', (e)=>{
     if(idleHint.style.display !== 'none') return;
     const p = clientToContent(e.clientX, e.clientY);
     const v = vertexPixelPos();
-    const d = Math.hypot(p.x-v.x, p.y-v.y);
-    // Allow grabbing near vertex, or anywhere if nothing is close (drag = move vertex)
-    if(d < 60 || true){
-      state.dragging = true;
-      activePointerId = e.pointerId;
-      svg.setPointerCapture(e.pointerId);
-      updateDrag(e);
+    const tilt = currentTiltDeg();
+    const cr = state.contentRect;
+    const R = baseRadius(cr) * state.radiusScale;
+
+    let mode = null;
+
+    if(state.showProtractor){
+      const pLocal = toLocal(p.x, p.y, v, tilt);
+      const dResize = Math.hypot(pLocal.x - v.x, pLocal.y - (v.y - R));
+      if(dResize < HANDLE_HIT) mode = 'resize';
     }
+    if(!mode){
+      const dVertex = Math.hypot(p.x - v.x, p.y - v.y);
+      if(dVertex < HANDLE_HIT) mode = 'vertex';
+    }
+    if(!mode) return; // 點到空白處不做任何事
+
+    state.dragMode = mode;
+    activePointerId = e.pointerId;
+    svg.setPointerCapture(e.pointerId);
+    updateDrag(e);
   });
   svg.addEventListener('pointermove', (e)=>{
-    if(state.dragging && e.pointerId === activePointerId) updateDrag(e);
+    if(state.dragMode && e.pointerId === activePointerId) updateDrag(e);
   });
   function endDrag(e){
     if(e.pointerId === activePointerId){
-      state.dragging = false;
+      state.dragMode = null;
       activePointerId = null;
     }
   }
@@ -623,11 +909,21 @@
 
   function updateDrag(e){
     const p = clientToContent(e.clientX, e.clientY);
-    state.vertexR = pointToRatio(p.x, p.y);
+    if(state.dragMode === 'vertex'){
+      state.vertexR = pointToRatio(p.x, p.y);
+    }else if(state.dragMode === 'resize'){
+      const v = vertexPixelPos();
+      const tilt = currentTiltDeg();
+      const cr = state.contentRect;
+      const pLocal = toLocal(p.x, p.y, v, tilt);
+      const dist = Math.hypot(pLocal.x - v.x, pLocal.y - v.y);
+      const base = baseRadius(cr) || 1;
+      state.radiusScale = Math.max(0.35, Math.min(2.2, dist / base));
+    }
   }
 
   /* ---------------- SVG drawing ---------------- */
-  let gClip, gRoot, lineHoriz, lineAngle, crossV, crossH, vertexDot, angleLabel, angleLabelBg, arcGroup;
+  let gClip, gRoot, lineHoriz, lineAngle, crossV, crossH, vertexDot, angleLabel, angleLabelBg, arcGroup, resizeHandle;
 
   function ensureDefs(){
     if(gClip) return;
@@ -678,6 +974,12 @@
     vertexDot.setAttribute('stroke-width','1.5');
     gRoot.appendChild(vertexDot);
 
+    resizeHandle = document.createElementNS(NS,'polygon');
+    resizeHandle.setAttribute('fill', '#262b31');
+    resizeHandle.setAttribute('stroke', '#6fe3c9');
+    resizeHandle.setAttribute('stroke-width','1.5');
+    gRoot.appendChild(resizeHandle);
+
     angleLabelBg = document.createElementNS(NS,'rect');
     angleLabelBg.setAttribute('rx','5');
     angleLabelBg.setAttribute('fill','rgba(20,23,26,0.75)');
@@ -711,12 +1013,12 @@
     gClip.setAttribute('height', cr.h);
 
     const v = vertexPixelPos();
-    const effectiveTilt = state.gyroOn ? (state.currentTilt*state.gyroSign + state.gyroFineOffset) : 0;
+    const effectiveTilt = currentTiltDeg();
     tiltVal.textContent = state.gyroOn ? (effectiveTilt.toFixed(1)+'°') : '關閉';
     tiltVal.classList.toggle('ok', state.gyroOn);
     tiltVal.classList.toggle('off', !state.gyroOn);
 
-    const R = Math.min(cr.w, cr.h) * 0.42;
+    const R = baseRadius(cr) * state.radiusScale;
     const lineLen = Math.max(cr.w, cr.h) * 1.3;
 
     gRoot.setAttribute('transform', `rotate(${-effectiveTilt} ${v.x} ${v.y})`);
@@ -740,6 +1042,14 @@
     crossV.setAttribute('x1', v.x); crossV.setAttribute('y1', v.y-11);
     crossV.setAttribute('x2', v.x); crossV.setAttribute('y2', v.y+11);
     vertexDot.setAttribute('cx', v.x); vertexDot.setAttribute('cy', v.y);
+
+    // resize handle (diamond) sitting straight "up" from vertex, in local (un-tilted) space
+    resizeHandle.style.display = state.showProtractor ? '' : 'none';
+    if(state.showProtractor){
+      const hx = v.x, hy = v.y - R;
+      const s = 7;
+      resizeHandle.setAttribute('points', `${hx},${hy-s} ${hx+s},${hy} ${hx},${hy+s} ${hx-s},${hy}`);
+    }
 
     // protractor arc ticks
     while(arcGroup.firstChild) arcGroup.removeChild(arcGroup.firstChild);
