@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>發射角度對準器</title>
+<style>
+  :root{
+    --bg: #14171a;
+    --panel: #1d2126;
+    --panel-2: #262b31;
+    --line: #33393f;
+    --text: #e8ebee;
+    --text-dim: #8a9199;
+    --accent: #ffb454;
+    --accent-dim: #7a5a2a;
+    --accent2: #6fe3c9;
+    --danger: #ff6b6b;
+    --radius: 10px;
+  }
+  :root:not([data-theme="light"]){ }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#14171a; --panel:#1d2126; --panel-2:#262b31; --line:#33393f; --text:#e8ebee; --text-dim:#8a9199;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#14171a; --panel:#1d2126; --panel-2:#262b31; --line:#33393f; --text:#e8ebee; --text-dim:#8a9199;
+  }
+
+  *{ box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+  html,body{ height:100%; margin:0; overscroll-behavior:none; }
+  body{
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang TC", "Noto Sans TC", sans-serif;
+    display:flex;
+    flex-direction:column;
+    height:100vh;
+    height:100dvh;
+    overflow:hidden;
+  }
+
+  /* ---------- Stage ---------- */
+  #stage{
+    position:relative;
+    flex:1 1 auto;
+    min-height:0;
+    background:#000;
+    overflow:hidden;
+    touch-action:none;
+  }
+  video{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    object-fit:contain;
+    background:#000;
+  }
+  video.mirror{ transform: scaleX(-1); }
+  svg.overlay{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    touch-action:none;
+  }
+
+  #idleHint{
+    position:absolute;
+    inset:0;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:16px;
+    text-align:center;
+    padding:24px;
+  }
+  #idleHint h1{
+    font-size:19px;
+    font-weight:600;
+    margin:0;
+    letter-spacing:0.01em;
+  }
+  #idleHint p{
+    font-size:13.5px;
+    color:var(--text-dim);
+    margin:0;
+    max-width:320px;
+    line-height:1.6;
+  }
+  .bigBtn{
+    background:var(--accent);
+    color:#1a1305;
+    border:none;
+    padding:13px 26px;
+    border-radius:999px;
+    font-size:15px;
+    font-weight:600;
+    cursor:pointer;
+  }
+  .bigBtn:active{ opacity:0.85; }
+
+  /* Readout chip top-left */
+  #readout{
+    position:absolute;
+    top:calc(env(safe-area-inset-top, 0px) + 10px);
+    left:12px;
+    background:rgba(20,23,26,0.72);
+    backdrop-filter: blur(6px);
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:8px 12px;
+    font-variant-numeric: tabular-nums;
+    pointer-events:none;
+    display:none;
+  }
+  #readout .lbl{ font-size:10.5px; color:var(--text-dim); letter-spacing:0.03em; }
+  #readout .val{ font-size:22px; font-weight:700; color:var(--accent); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; line-height:1.15; }
+
+  #tiltChip{
+    position:absolute;
+    top:calc(env(safe-area-inset-top, 0px) + 10px);
+    right:12px;
+    background:rgba(20,23,26,0.72);
+    backdrop-filter: blur(6px);
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:8px 12px;
+    pointer-events:none;
+    display:none;
+    text-align:right;
+  }
+  #tiltChip .lbl{ font-size:10.5px; color:var(--text-dim); }
+  #tiltChip .val{ font-size:16px; font-weight:600; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  #tiltChip .val.ok{ color:var(--accent2); }
+  #tiltChip .val.off{ color:var(--text-dim); }
+
+  #hint2{
+    position:absolute;
+    bottom:10px;
+    left:50%;
+    transform:translateX(-50%);
+    font-size:11.5px;
+    color:var(--text-dim);
+    background:rgba(20,23,26,0.6);
+    padding:5px 10px;
+    border-radius:8px;
+    pointer-events:none;
+    display:none;
+    white-space:nowrap;
+  }
+
+  /* ---------- Control panel ---------- */
+  #panel{
+    flex:0 0 auto;
+    background:var(--panel);
+    border-top:1px solid var(--line);
+    padding:10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+    display:flex;
+    flex-direction:column;
+    gap:9px;
+  }
+  .row{
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .angleControl{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    flex:1 1 auto;
+  }
+  .stepBtn{
+    width:38px;
+    height:38px;
+    flex:0 0 auto;
+    border-radius:9px;
+    border:1px solid var(--line);
+    background:var(--panel-2);
+    color:var(--text);
+    font-size:18px;
+    line-height:1;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    user-select:none;
+  }
+  .stepBtn:active{ background:var(--line); }
+  #angleSlider{
+    flex:1 1 auto;
+    -webkit-appearance:none;
+    appearance:none;
+    height:4px;
+    border-radius:2px;
+    background:var(--line);
+    outline:none;
+  }
+  #angleSlider::-webkit-slider-thumb{
+    -webkit-appearance:none;
+    width:20px; height:20px;
+    border-radius:50%;
+    background:var(--accent);
+    cursor:pointer;
+    border:2px solid #14171a;
+  }
+  #angleSlider::-moz-range-thumb{
+    width:20px; height:20px;
+    border-radius:50%;
+    background:var(--accent);
+    border:2px solid #14171a;
+    cursor:pointer;
+  }
+  #angleNum{
+    width:66px;
+    flex:0 0 auto;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    color:var(--accent);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size:16px;
+    font-weight:600;
+    text-align:center;
+    border-radius:9px;
+    padding:8px 2px;
+  }
+
+  .toggleRow{
+    display:flex;
+    gap:7px;
+    flex-wrap:wrap;
+  }
+  .toggle{
+    flex:1 1 0;
+    min-width:0;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    color:var(--text-dim);
+    font-size:12.5px;
+    padding:9px 6px;
+    border-radius:9px;
+    cursor:pointer;
+    text-align:center;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .toggle.on{
+    background:var(--accent-dim);
+    border-color:var(--accent);
+    color:var(--accent);
+    font-weight:600;
+  }
+  .toggle.gyro.on{
+    background:#1c3a35;
+    border-color:var(--accent2);
+    color:var(--accent2);
+  }
+
+  #gyroFine{
+    display:none;
+    align-items:center;
+    gap:8px;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    border-radius:9px;
+    padding:6px 10px;
+  }
+  #gyroFine span{ font-size:11.5px; color:var(--text-dim); flex:0 0 auto; }
+  #gyroFineSlider{ flex:1 1 auto; }
+  #gyroFineVal{
+    width:44px; text-align:right; font-family: ui-monospace, monospace; font-size:12px; color:var(--accent2); flex:0 0 auto;
+  }
+
+  #status{
+    font-size:11px;
+    color:var(--text-dim);
+    text-align:center;
+    min-height:14px;
+  }
+  #status.err{ color: var(--danger); }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <svg class="overlay" id="overlay"></svg>
+
+  <div id="idleHint">
+    <h1>發射角度對準器</h1>
+    <p>開啟相機後，畫面上會出現水平線與角度線。拖曳十字準星移到發射點的位置，再把發射器對齊角度線即可。</p>
+    <button class="bigBtn" id="startBtn">開啟相機</button>
+  </div>
+
+  <div id="readout">
+    <div class="lbl">目標角度</div>
+    <div class="val"><span id="angleReadoutVal">30.0</span>°</div>
+  </div>
+
+  <div id="tiltChip">
+    <div class="lbl">水平校正</div>
+    <div class="val off" id="tiltVal">關閉</div>
+  </div>
+
+  <div id="hint2">拖曳十字準星以移動發射點</div>
+</div>
+
+<div id="panel">
+  <div class="row angleControl">
+    <button class="stepBtn" id="angleMinus">−</button>
+    <input type="range" id="angleSlider" min="0" max="90" step="0.5" value="30">
+    <button class="stepBtn" id="anglePlus">＋</button>
+    <input type="text" id="angleNum" inputmode="decimal" value="30.0°">
+  </div>
+
+  <div class="row toggleRow">
+    <button class="toggle" id="mirrorToggle">⇋ 左右鏡像</button>
+    <button class="toggle on" id="protractorToggle">量角器刻度</button>
+    <button class="toggle" id="resetVertexBtn">重設頂點</button>
+  </div>
+
+  <div class="row toggleRow">
+    <button class="toggle gyro" id="gyroToggle">📐 陀螺儀水平校正</button>
+    <button class="toggle" id="flipCompBtn" style="display:none;">校正方向反轉</button>
+    <button class="toggle" id="switchCamBtn">切換鏡頭</button>
+  </div>
+
+  <div id="gyroFine">
+    <span>微調</span>
+    <input type="range" id="gyroFineSlider" min="-10" max="10" step="0.1" value="0">
+    <span id="gyroFineVal">0.0°</span>
+  </div>
+
+  <div id="status"></div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  const stage = document.getElementById('stage');
+  const video = document.getElementById('video');
+  const svg = document.getElementById('overlay');
+  const idleHint = document.getElementById('idleHint');
+  const startBtn = document.getElementById('startBtn');
+  const readout = document.getElementById('readout');
+  const angleReadoutVal = document.getElementById('angleReadoutVal');
+  const tiltChip = document.getElementById('tiltChip');
+  const tiltVal = document.getElementById('tiltVal');
+  const hint2 = document.getElementById('hint2');
+  const statusEl = document.getElementById('status');
+
+  const angleSlider = document.getElementById('angleSlider');
+  const angleNum = document.getElementById('angleNum');
+  const angleMinus = document.getElementById('angleMinus');
+  const anglePlus = document.getElementById('anglePlus');
+  const mirrorToggle = document.getElementById('mirrorToggle');
+  const protractorToggle = document.getElementById('protractorToggle');
+  const resetVertexBtn = document.getElementById('resetVertexBtn');
+  const gyroToggle = document.getElementById('gyroToggle');
+  const flipCompBtn = document.getElementById('flipCompBtn');
+  const switchCamBtn = document.getElementById('switchCamBtn');
+  const gyroFine = document.getElementById('gyroFine');
+  const gyroFineSlider = document.getElementById('gyroFineSlider');
+  const gyroFineVal = document.getElementById('gyroFineVal');
+
+  const NS = "http://www.w3.org/2000/svg";
+
+  const state = {
+    stream: null,
+    facingMode: 'environment',
+    angleDeg: 30,
+    mirror: 1,          // 1 = 角度線往右上, -1 = 往左上
+    vertexR: {x:0.5, y:0.90}, // 相對於「畫面實際內容矩形」的比例座標
+    showProtractor: true,
+    gyroOn: false,
+    gyroSign: 1,        // 校正方向，若裝置方向不對可反轉
+    gyroFineOffset: 0,  // 手動微調 (度)
+    currentTilt: 0,      // 目前偵測到的傾斜角
+    dragging: false,
+    contentRect: {x:0,y:0,w:0,h:0}
+  };
+
+  function setStatus(msg, isErr){
+    statusEl.textContent = msg || '';
+    statusEl.classList.toggle('err', !!isErr);
+  }
+
+  /* ---------------- Camera ---------------- */
+  async function startCamera(){
+    stopCamera();
+
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      const isHttps = location.protocol === 'https:';
+      const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+      if(!isHttps && !isLocalhost){
+        setStatus('無法開啟相機：此頁面不是以 https 開啟（目前是 '+location.protocol+'），瀏覽器基於安全性不允許使用相機。請改用 https 網址開啟這個頁面（例如發布出去的連結），或用支援本機安全來源的方式開啟。', true);
+      }else{
+        setStatus('無法開啟相機：此瀏覽器不支援相機 API，或該功能已被瀏覽器/系統設定關閉。請確認瀏覽器版本，並在系統設定中允許此網站使用相機。', true);
+      }
+      return;
+    }
+
+    setStatus('正在開啟相機…');
+    try{
+      const constraints = {
+        audio:false,
+        video:{
+          facingMode: { ideal: state.facingMode },
+          width:{ ideal: 1920 },
+          height:{ ideal: 1080 }
+        }
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      state.stream = stream;
+      video.srcObject = stream;
+      await video.play();
+      video.classList.toggle('mirror', state.facingMode === 'user');
+      idleHint.style.display = 'none';
+      readout.style.display = 'block';
+      hint2.style.display = 'block';
+      setStatus('');
+      computeContentRect();
+    }catch(err){
+      console.error(err);
+      setStatus('無法開啟相機：' + (err && err.message ? err.message : err), true);
+    }
+  }
+
+  function stopCamera(){
+    if(state.stream){
+      state.stream.getTracks().forEach(t=>t.stop());
+      state.stream = null;
+    }
+  }
+
+  startBtn.addEventListener('click', startCamera);
+
+  switchCamBtn.addEventListener('click', async ()=>{
+    state.facingMode = (state.facingMode === 'environment') ? 'user' : 'environment';
+    await startCamera();
+  });
+
+  video.addEventListener('loadedmetadata', computeContentRect);
+  window.addEventListener('resize', computeContentRect);
+  new ResizeObserver(computeContentRect).observe(stage);
+
+  /* -------- compute the actual visible video rect (object-fit: contain) -------- */
+  function computeContentRect(){
+    const cw = stage.clientWidth, ch = stage.clientHeight;
+    svg.setAttribute('viewBox', `0 0 ${cw} ${ch}`);
+    svg.setAttribute('width', cw);
+    svg.setAttribute('height', ch);
+
+    const vw = video.videoWidth || cw;
+    const vh = video.videoHeight || ch;
+    const scale = Math.min(cw/vw, ch/vh);
+    const rw = vw*scale, rh = vh*scale;
+    const rx = (cw-rw)/2, ry = (ch-rh)/2;
+    state.contentRect = { x:rx, y:ry, w:rw, h:rh };
+    ensureDefs();
+  }
+
+  /* ---------------- Angle controls ---------------- */
+  function setAngle(v){
+    v = Math.max(0, Math.min(90, v));
+    v = Math.round(v*10)/10;
+    state.angleDeg = v;
+    angleSlider.value = v;
+    angleNum.value = v.toFixed(1) + '°';
+    angleReadoutVal.textContent = v.toFixed(1);
+  }
+  setAngle(30);
+
+  angleSlider.addEventListener('input', ()=> setAngle(parseFloat(angleSlider.value)));
+  angleMinus.addEventListener('click', ()=> setAngle(state.angleDeg - 0.5));
+  anglePlus.addEventListener('click', ()=> setAngle(state.angleDeg + 0.5));
+  angleNum.addEventListener('change', ()=>{
+    const n = parseFloat(angleNum.value);
+    if(!isNaN(n)) setAngle(n);
+    else angleNum.value = state.angleDeg.toFixed(1)+'°';
+  });
+  angleNum.addEventListener('focus', ()=> angleNum.select());
+
+  mirrorToggle.addEventListener('click', ()=>{
+    state.mirror *= -1;
+    mirrorToggle.classList.toggle('on', state.mirror === -1);
+  });
+
+  protractorToggle.addEventListener('click', ()=>{
+    state.showProtractor = !state.showProtractor;
+    protractorToggle.classList.toggle('on', state.showProtractor);
+  });
+
+  resetVertexBtn.addEventListener('click', ()=>{
+    state.vertexR = {x:0.5, y:0.90};
+  });
+
+  /* ---------------- Gyroscope leveling ---------------- */
+  let gyroHandler = null;
+
+  async function enableGyro(){
+    if(typeof DeviceOrientationEvent !== 'undefined' &&
+       typeof DeviceOrientationEvent.requestPermission === 'function'){
+      try{
+        const res = await DeviceOrientationEvent.requestPermission();
+        if(res !== 'granted'){
+          setStatus('未取得動作感測器權限', true);
+          return false;
+        }
+      }catch(e){
+        setStatus('無法取得動作感測器權限', true);
+        return false;
+      }
+    }
+    gyroHandler = (e)=>{
+      const angle = (screen.orientation && typeof screen.orientation.angle === 'number')
+        ? screen.orientation.angle
+        : (window.orientation || 0);
+      let roll;
+      if(angle === 0) roll = e.gamma;
+      else if(angle === 180 || angle === -180) roll = -e.gamma;
+      else if(angle === 90) roll = -e.beta;
+      else if(angle === -90 || angle === 270) roll = e.beta;
+      else roll = e.gamma;
+      if(roll == null) return;
+      state.currentTilt = roll;
+    };
+    window.addEventListener('deviceorientation', gyroHandler);
+    return true;
+  }
+
+  function disableGyro(){
+    if(gyroHandler) window.removeEventListener('deviceorientation', gyroHandler);
+    gyroHandler = null;
+    state.currentTilt = 0;
+  }
+
+  gyroToggle.addEventListener('click', async ()=>{
+    if(!state.gyroOn){
+      const ok = await enableGyro();
+      if(!ok) return;
+      state.gyroOn = true;
+      gyroToggle.classList.add('on');
+      tiltChip.style.display = 'block';
+      flipCompBtn.style.display = 'block';
+      gyroFine.style.display = 'flex';
+    }else{
+      state.gyroOn = false;
+      disableGyro();
+      gyroToggle.classList.remove('on');
+      tiltChip.style.display = 'none';
+      flipCompBtn.style.display = 'none';
+      gyroFine.style.display = 'none';
+    }
+  });
+
+  flipCompBtn.addEventListener('click', ()=>{
+    state.gyroSign *= -1;
+  });
+
+  gyroFineSlider.addEventListener('input', ()=>{
+    state.gyroFineOffset = parseFloat(gyroFineSlider.value);
+    gyroFineVal.textContent = state.gyroFineOffset.toFixed(1)+'°';
+  });
+
+  /* ---------------- Drag vertex ---------------- */
+  function clientToContent(clientX, clientY){
+    const rect = stage.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    return {x,y};
+  }
+
+  function pointToRatio(x,y){
+    const cr = state.contentRect;
+    if(cr.w <=0 || cr.h<=0) return {x:0.5,y:0.9};
+    let rx = (x - cr.x)/cr.w;
+    let ry = (y - cr.y)/cr.h;
+    rx = Math.max(0, Math.min(1, rx));
+    ry = Math.max(0, Math.min(1, ry));
+    return {x:rx, y:ry};
+  }
+
+  function vertexPixelPos(){
+    const cr = state.contentRect;
+    return {
+      x: cr.x + state.vertexR.x*cr.w,
+      y: cr.y + state.vertexR.y*cr.h
+    };
+  }
+
+  let activePointerId = null;
+  svg.addEventListener('pointerdown', (e)=>{
+    if(idleHint.style.display !== 'none') return;
+    const p = clientToContent(e.clientX, e.clientY);
+    const v = vertexPixelPos();
+    const d = Math.hypot(p.x-v.x, p.y-v.y);
+    // Allow grabbing near vertex, or anywhere if nothing is close (drag = move vertex)
+    if(d < 60 || true){
+      state.dragging = true;
+      activePointerId = e.pointerId;
+      svg.setPointerCapture(e.pointerId);
+      updateDrag(e);
+    }
+  });
+  svg.addEventListener('pointermove', (e)=>{
+    if(state.dragging && e.pointerId === activePointerId) updateDrag(e);
+  });
+  function endDrag(e){
+    if(e.pointerId === activePointerId){
+      state.dragging = false;
+      activePointerId = null;
+    }
+  }
+  svg.addEventListener('pointerup', endDrag);
+  svg.addEventListener('pointercancel', endDrag);
+
+  function updateDrag(e){
+    const p = clientToContent(e.clientX, e.clientY);
+    state.vertexR = pointToRatio(p.x, p.y);
+  }
+
+  /* ---------------- SVG drawing ---------------- */
+  let gClip, gRoot, lineHoriz, lineAngle, crossV, crossH, vertexDot, angleLabel, angleLabelBg, arcGroup;
+
+  function ensureDefs(){
+    if(gClip) return;
+    const defs = document.createElementNS(NS,'defs');
+    const clipPath = document.createElementNS(NS,'clipPath');
+    clipPath.setAttribute('id','contentClip');
+    gClip = document.createElementNS(NS,'rect');
+    clipPath.appendChild(gClip);
+    defs.appendChild(clipPath);
+    svg.appendChild(defs);
+
+    gRoot = document.createElementNS(NS,'g');
+    gRoot.setAttribute('clip-path','url(#contentClip)');
+    svg.appendChild(gRoot);
+
+    arcGroup = document.createElementNS(NS,'g');
+    arcGroup.setAttribute('stroke', '#8a9199');
+    arcGroup.setAttribute('stroke-width','1');
+    arcGroup.setAttribute('fill','none');
+    gRoot.appendChild(arcGroup);
+
+    lineHoriz = document.createElementNS(NS,'line');
+    lineHoriz.setAttribute('stroke', '#6fe3c9');
+    lineHoriz.setAttribute('stroke-width','1.5');
+    lineHoriz.setAttribute('stroke-dasharray','6 5');
+    lineHoriz.setAttribute('opacity','0.8');
+    gRoot.appendChild(lineHoriz);
+
+    lineAngle = document.createElementNS(NS,'line');
+    lineAngle.setAttribute('stroke', '#ffb454');
+    lineAngle.setAttribute('stroke-width','2.5');
+    lineAngle.setAttribute('stroke-linecap','round');
+    gRoot.appendChild(lineAngle);
+
+    crossH = document.createElementNS(NS,'line');
+    crossH.setAttribute('stroke', '#ffffff');
+    crossH.setAttribute('stroke-width','1.5');
+    gRoot.appendChild(crossH);
+    crossV = document.createElementNS(NS,'line');
+    crossV.setAttribute('stroke', '#ffffff');
+    crossV.setAttribute('stroke-width','1.5');
+    gRoot.appendChild(crossV);
+
+    vertexDot = document.createElementNS(NS,'circle');
+    vertexDot.setAttribute('r','5');
+    vertexDot.setAttribute('fill','none');
+    vertexDot.setAttribute('stroke', '#ffffff');
+    vertexDot.setAttribute('stroke-width','1.5');
+    gRoot.appendChild(vertexDot);
+
+    angleLabelBg = document.createElementNS(NS,'rect');
+    angleLabelBg.setAttribute('rx','5');
+    angleLabelBg.setAttribute('fill','rgba(20,23,26,0.75)');
+    svg.appendChild(angleLabelBg);
+
+    angleLabel = document.createElementNS(NS,'text');
+    angleLabel.setAttribute('fill', '#ffb454');
+    angleLabel.setAttribute('font-size','13');
+    angleLabel.setAttribute('font-family','ui-monospace, SF Mono, Menlo, Consolas, monospace');
+    angleLabel.setAttribute('font-weight','600');
+    svg.appendChild(angleLabel);
+  }
+
+  function polar(vx, vy, angleDeg, len, mirrorSide){
+    const rad = angleDeg * Math.PI/180;
+    return {
+      x: vx + Math.cos(rad)*len*mirrorSide,
+      y: vy - Math.sin(rad)*len
+    };
+  }
+
+  function render(){
+    requestAnimationFrame(render);
+    if(!gRoot) return;
+    const cr = state.contentRect;
+    if(cr.w<=0 || cr.h<=0) return;
+
+    gClip.setAttribute('x', cr.x);
+    gClip.setAttribute('y', cr.y);
+    gClip.setAttribute('width', cr.w);
+    gClip.setAttribute('height', cr.h);
+
+    const v = vertexPixelPos();
+    const effectiveTilt = state.gyroOn ? (state.currentTilt*state.gyroSign + state.gyroFineOffset) : 0;
+    tiltVal.textContent = state.gyroOn ? (effectiveTilt.toFixed(1)+'°') : '關閉';
+    tiltVal.classList.toggle('ok', state.gyroOn);
+    tiltVal.classList.toggle('off', !state.gyroOn);
+
+    const R = Math.min(cr.w, cr.h) * 0.42;
+    const lineLen = Math.max(cr.w, cr.h) * 1.3;
+
+    gRoot.setAttribute('transform', `rotate(${-effectiveTilt} ${v.x} ${v.y})`);
+
+    // horizontal reference
+    lineHoriz.setAttribute('x1', v.x - lineLen);
+    lineHoriz.setAttribute('y1', v.y);
+    lineHoriz.setAttribute('x2', v.x + lineLen);
+    lineHoriz.setAttribute('y2', v.y);
+
+    // angle line
+    const tip = polar(v.x, v.y, state.angleDeg, lineLen, state.mirror);
+    lineAngle.setAttribute('x1', v.x);
+    lineAngle.setAttribute('y1', v.y);
+    lineAngle.setAttribute('x2', tip.x);
+    lineAngle.setAttribute('y2', tip.y);
+
+    // crosshair at vertex
+    crossH.setAttribute('x1', v.x-11); crossH.setAttribute('y1', v.y);
+    crossH.setAttribute('x2', v.x+11); crossH.setAttribute('y2', v.y);
+    crossV.setAttribute('x1', v.x); crossV.setAttribute('y1', v.y-11);
+    crossV.setAttribute('x2', v.x); crossV.setAttribute('y2', v.y+11);
+    vertexDot.setAttribute('cx', v.x); vertexDot.setAttribute('cy', v.y);
+
+    // protractor arc ticks
+    while(arcGroup.firstChild) arcGroup.removeChild(arcGroup.firstChild);
+    if(state.showProtractor){
+      [1,-1].forEach(side=>{
+        for(let d=0; d<=90; d+=5){
+          const major = (d % 15 === 0);
+          const len = major ? 14 : 7;
+          const rad = d*Math.PI/180;
+          const ox = v.x + Math.cos(rad)*R*side;
+          const oy = v.y - Math.sin(rad)*R;
+          const ix = v.x + Math.cos(rad)*(R-len)*side;
+          const iy = v.y - Math.sin(rad)*(R-len);
+          const tick = document.createElementNS(NS,'line');
+          tick.setAttribute('x1', ix); tick.setAttribute('y1', iy);
+          tick.setAttribute('x2', ox); tick.setAttribute('y2', oy);
+          tick.setAttribute('stroke-width', major ? '1.6' : '1');
+          arcGroup.appendChild(tick);
+          if(major){
+            const lx = v.x + Math.cos(rad)*(R+14)*side;
+            const ly = v.y - Math.sin(rad)*(R+14);
+            const t = document.createElementNS(NS,'text');
+            t.setAttribute('x', lx); t.setAttribute('y', ly+4);
+            t.setAttribute('font-size','10.5');
+            t.setAttribute('fill','#8a9199');
+            t.setAttribute('text-anchor','middle');
+            t.setAttribute('font-family','ui-monospace, SF Mono, Menlo, Consolas, monospace');
+            t.textContent = d;
+            arcGroup.appendChild(t);
+          }
+        }
+        // baseline arc
+        const arcPath = document.createElementNS(NS,'path');
+        const p0x = v.x + R*side, p0y = v.y;
+        const p1x = v.x, p1y = v.y - R;
+        arcPath.setAttribute('d', `M ${p0x} ${p0y} A ${R} ${R} 0 0 ${side>0?0:1} ${p1x} ${p1y}`);
+        arcPath.setAttribute('stroke-width','1');
+        arcGroup.appendChild(arcPath);
+      });
+    }
+
+    // angle label near tip (kept upright, not rotated with the tilt group)
+    const labelAngleRad = (-effectiveTilt)*Math.PI/180;
+    const cosT = Math.cos(labelAngleRad), sinT = Math.sin(labelAngleRad);
+    const tipRotX = v.x + (tip.x-v.x)*cosT - (tip.y-v.y)*sinT;
+    const tipRotY = v.y + (tip.x-v.x)*sinT + (tip.y-v.y)*cosT;
+    const txt = state.angleDeg.toFixed(1)+'°';
+    angleLabel.textContent = txt;
+    const lx = Math.max(28, Math.min(cr.x+cr.w-28, tipRotX));
+    const ly = Math.max(16, Math.min(cr.y+cr.h-10, tipRotY));
+    angleLabel.setAttribute('x', lx);
+    angleLabel.setAttribute('y', ly);
+    angleLabel.setAttribute('text-anchor','middle');
+    const bw = txt.length*8+14;
+    angleLabelBg.setAttribute('x', lx-bw/2);
+    angleLabelBg.setAttribute('y', ly-15);
+    angleLabelBg.setAttribute('width', bw);
+    angleLabelBg.setAttribute('height', 20);
+  }
+
+  computeContentRect();
+  requestAnimationFrame(render);
+
+})();
+</script>
+</body>
+</html>
