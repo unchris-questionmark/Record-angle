@@ -155,13 +155,20 @@
 
   /* ---------- Control panel ---------- */
   #panel{
-    flex:0 0 auto;
+    flex:0 1 auto;
+    min-height:0;
+    max-height:46vh;
+    overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
     background:var(--panel);
     border-top:1px solid var(--line);
     padding:10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
     display:flex;
     flex-direction:column;
     gap:9px;
+  }
+  @media (orientation: landscape){
+    #panel{ max-height:52vh; }
   }
   .row{
     display:flex;
@@ -352,16 +359,26 @@
     padding:14px;
     width:100%;
     max-width:460px;
+    max-height:100%;
+    overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
     display:flex;
     flex-direction:column;
     gap:10px;
   }
   #previewVideo{
     width:100%;
-    max-height:52vh;
+    max-height:34vh;
+    flex:0 0 auto;
     border-radius:9px;
     background:#000;
     display:block;
+  }
+  @media (orientation: portrait){
+    #previewVideo{ max-height:46vh; }
+  }
+  #previewBox .row{
+    flex:0 0 auto;
   }
   #filenameInput{
     flex:1 1 auto;
@@ -579,10 +596,37 @@
       readout.style.display = 'block';
       hint2.style.display = 'block';
       const track = stream.getVideoTracks()[0];
-      const settings = track && track.getSettings ? track.getSettings() : {};
+      let settings = track && track.getSettings ? track.getSettings() : {};
       state.actualFps = settings.frameRate ? Math.round(settings.frameRate) : 30;
+
+      // 部分裝置（尤其前鏡頭）在高解析度下協商不到 60fps，
+      // 嘗試用較低解析度換取更高幀率。
+      if(track && track.applyConstraints && state.actualFps < 55){
+        const fallbackResolutions = [
+          {width:1280, height:720},
+          {width:960, height:540},
+          {width:640, height:480}
+        ];
+        for(const res of fallbackResolutions){
+          try{
+            await track.applyConstraints({
+              width:{ ideal: res.width },
+              height:{ ideal: res.height },
+              frameRate:{ ideal: 60, min: 50 }
+            });
+            settings = track.getSettings();
+            const fps = settings.frameRate ? Math.round(settings.frameRate) : state.actualFps;
+            if(fps > state.actualFps) state.actualFps = fps;
+            if(state.actualFps >= 55) break;
+          }catch(e){ /* 該解析度不支援就跳過，嘗試下一個 */ }
+        }
+      }
+
       if(settings.deviceId) state.selectedDeviceId = settings.deviceId;
-      setStatus(settings.width ? `相機畫面：${settings.width}×${settings.height}，${state.actualFps} fps` : '');
+      const fpsNote = state.actualFps < 55
+        ? `（此鏡頭在瀏覽器下最高只協商到 ${state.actualFps}fps，可能是裝置/系統對 WebRTC 擷取的限制）`
+        : '';
+      setStatus(settings.width ? `相機畫面：${settings.width}×${settings.height}，${state.actualFps} fps ${fpsNote}` : '');
       computeContentRect();
       enumerateCameras();
     }catch(err){
