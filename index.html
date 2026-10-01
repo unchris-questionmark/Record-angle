@@ -320,6 +320,65 @@
     color:#1a0505;
     font-weight:700;
   }
+
+  #cameraSelect{
+    flex:1 1 auto;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    color:var(--text);
+    font-size:13px;
+    padding:9px 8px;
+    border-radius:9px;
+  }
+
+  /* ---------- Recording preview modal ---------- */
+  #previewModal{
+    display:none;
+    position:fixed;
+    inset:0;
+    z-index:50;
+    background:rgba(10,11,13,0.82);
+    backdrop-filter: blur(4px);
+    align-items:center;
+    justify-content:center;
+    padding:16px;
+    padding-top:calc(16px + env(safe-area-inset-top, 0px));
+    padding-bottom:calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+  #previewBox{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:14px;
+    width:100%;
+    max-width:460px;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+  #previewVideo{
+    width:100%;
+    max-height:52vh;
+    border-radius:9px;
+    background:#000;
+    display:block;
+  }
+  #filenameInput{
+    flex:1 1 auto;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    color:var(--text);
+    font-size:14px;
+    padding:9px 10px;
+    border-radius:9px;
+    min-width:0;
+  }
+  #previewBox .ext{
+    color:var(--text-dim);
+    font-size:13px;
+    flex:0 0 auto;
+    align-self:center;
+  }
 </style>
 </head>
 <body>
@@ -371,11 +430,19 @@
   <div class="row toggleRow">
     <button class="toggle gyro" id="gyroToggle">📐 陀螺儀水平校正</button>
     <button class="toggle" id="flipCompBtn" style="display:none;">校正方向反轉</button>
-    <button class="toggle" id="switchCamBtn">切換鏡頭</button>
+    <button class="toggle" id="switchCamBtn">切換前/後鏡頭</button>
+  </div>
+
+  <div class="row toggleRow" id="cameraSelectRow" style="display:none;">
+    <select id="cameraSelect"></select>
   </div>
 
   <div class="row toggleRow">
-    <button class="toggle recordBtn" id="recordBtn" style="flex:1 1 100%;">🔴 開始錄影（含角度線）</button>
+    <button class="toggle on" id="recordOverlayToggle">角度標示錄進影片</button>
+  </div>
+
+  <div class="row toggleRow">
+    <button class="toggle recordBtn" id="recordBtn" style="flex:1 1 100%;">🔴 開始錄影</button>
   </div>
 
   <div id="gyroFine">
@@ -385,6 +452,20 @@
   </div>
 
   <div id="status"></div>
+</div>
+
+<div id="previewModal">
+  <div id="previewBox">
+    <video id="previewVideo" playsinline controls></video>
+    <div class="row" style="gap:8px;">
+      <input type="text" id="filenameInput" placeholder="檔名">
+      <span class="ext">.webm</span>
+    </div>
+    <div class="row" style="gap:8px;">
+      <button class="bigBtn" id="saveRecBtn" style="flex:1;">💾 儲存影片</button>
+      <button class="toggle" id="discardRecBtn" style="flex:0 0 auto;">✕ 捨棄</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -420,6 +501,14 @@
   const recIndicator = document.getElementById('recIndicator');
   const recTimer = document.getElementById('recTimer');
   const recCanvas = document.getElementById('recCanvas');
+  const recordOverlayToggle = document.getElementById('recordOverlayToggle');
+  const cameraSelectRow = document.getElementById('cameraSelectRow');
+  const cameraSelect = document.getElementById('cameraSelect');
+  const previewModal = document.getElementById('previewModal');
+  const previewVideo = document.getElementById('previewVideo');
+  const filenameInput = document.getElementById('filenameInput');
+  const saveRecBtn = document.getElementById('saveRecBtn');
+  const discardRecBtn = document.getElementById('discardRecBtn');
 
   const NS = "http://www.w3.org/2000/svg";
 
@@ -439,7 +528,10 @@
     contentRect: {x:0,y:0,w:0,h:0},
     isRecording: false,
     recStartTime: 0,
-    actualFps: 30
+    actualFps: 30,
+    recordOverlay: true,
+    cameras: [],
+    selectedDeviceId: null
   };
 
   function setStatus(msg, isErr){
@@ -464,32 +556,61 @@
 
     setStatus('正在開啟相機…');
     try{
-      const constraints = {
-        audio:false,
-        video:{
-          facingMode: { ideal: state.facingMode },
-          width:{ ideal: 1920 },
-          height:{ ideal: 1080 },
-          frameRate:{ ideal: 60, min: 30 }
-        }
-      };
+      const videoConstraints = state.selectedDeviceId
+        ? {
+            deviceId: { exact: state.selectedDeviceId },
+            width:{ ideal: 1920 },
+            height:{ ideal: 1080 },
+            frameRate:{ ideal: 60, min: 30 }
+          }
+        : {
+            facingMode: { ideal: state.facingMode },
+            width:{ ideal: 1920 },
+            height:{ ideal: 1080 },
+            frameRate:{ ideal: 60, min: 30 }
+          };
+      const constraints = { audio:false, video: videoConstraints };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       state.stream = stream;
       video.srcObject = stream;
       await video.play();
-      video.classList.toggle('mirror', state.facingMode === 'user');
+      video.classList.toggle('mirror', state.facingMode === 'user' && !state.selectedDeviceId);
       idleHint.style.display = 'none';
       readout.style.display = 'block';
       hint2.style.display = 'block';
       const track = stream.getVideoTracks()[0];
       const settings = track && track.getSettings ? track.getSettings() : {};
       state.actualFps = settings.frameRate ? Math.round(settings.frameRate) : 30;
+      if(settings.deviceId) state.selectedDeviceId = settings.deviceId;
       setStatus(settings.width ? `相機畫面：${settings.width}×${settings.height}，${state.actualFps} fps` : '');
       computeContentRect();
+      enumerateCameras();
     }catch(err){
       console.error(err);
       setStatus('無法開啟相機：' + (err && err.message ? err.message : err), true);
     }
+  }
+
+  // 列出所有可用鏡頭（包含 iPad 的廣角/超廣角鏡頭），讓使用者可直接選取特定鏡頭
+  async function enumerateCameras(){
+    if(!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    try{
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      state.cameras = devices.filter(d=>d.kind === 'videoinput');
+      if(state.cameras.length <= 1){
+        cameraSelectRow.style.display = 'none';
+        return;
+      }
+      cameraSelect.innerHTML = '';
+      state.cameras.forEach((cam, i)=>{
+        const opt = document.createElement('option');
+        opt.value = cam.deviceId;
+        opt.textContent = cam.label || ('鏡頭 ' + (i+1));
+        cameraSelect.appendChild(opt);
+      });
+      if(state.selectedDeviceId) cameraSelect.value = state.selectedDeviceId;
+      cameraSelectRow.style.display = 'flex';
+    }catch(e){ /* 列舉失敗就靜默略過，不影響主要功能 */ }
   }
 
   function stopCamera(){
@@ -503,8 +624,20 @@
 
   switchCamBtn.addEventListener('click', async ()=>{
     if(state.isRecording) stopRecording();
+    state.selectedDeviceId = null;
     state.facingMode = (state.facingMode === 'environment') ? 'user' : 'environment';
     await startCamera();
+  });
+
+  cameraSelect.addEventListener('change', async ()=>{
+    if(state.isRecording) stopRecording();
+    state.selectedDeviceId = cameraSelect.value;
+    await startCamera();
+  });
+
+  recordOverlayToggle.addEventListener('click', ()=>{
+    state.recordOverlay = !state.recordOverlay;
+    recordOverlayToggle.classList.toggle('on', state.recordOverlay);
   });
 
   video.addEventListener('loadedmetadata', computeContentRect);
@@ -647,6 +780,8 @@
   function drawOverlayOnCanvas(ctx, w, h){
     ctx.clearRect(0,0,w,h);
     ctx.drawImage(video, 0, 0, w, h);
+
+    if(!state.recordOverlay) return; // 不把量角器/角度線錄進影片，只留原始畫面
 
     const cr = {x:0, y:0, w, h};
     const v = { x: cr.x + state.vertexR.x*cr.w, y: cr.y + state.vertexR.y*cr.h };
@@ -793,15 +928,8 @@
     mediaRecorder.ondataavailable = (e)=>{ if(e.data && e.data.size>0) recordedChunks.push(e.data); };
     mediaRecorder.onstop = ()=>{
       const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const ts = new Date();
-      const pad = n=>String(n).padStart(2,'0');
-      const fname = `launch-angle-${ts.getFullYear()}${pad(ts.getMonth()+1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.webm`;
-      a.href = url; a.download = fname;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(()=>URL.revokeObjectURL(url), 15000);
       recStream.getTracks().forEach(t=>t.stop());
+      openPreview(blob);
     };
 
     mediaRecorder.start(200);
@@ -809,7 +937,7 @@
     state.recStartTime = performance.now();
     recIndicator.style.display = 'flex';
     recordBtn.classList.add('on');
-    recordBtn.textContent = '⏹ 停止並下載影片';
+    recordBtn.textContent = '⏹ 停止錄影';
     drawRecFrame();
   }
 
@@ -820,12 +948,56 @@
     if(mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
     recIndicator.style.display = 'none';
     recordBtn.classList.remove('on');
-    recordBtn.textContent = '🔴 開始錄影（含角度線）';
+    recordBtn.textContent = '🔴 開始錄影';
   }
 
   recordBtn.addEventListener('click', ()=>{
     if(state.isRecording) stopRecording();
     else startRecording();
+  });
+
+  /* ---------------- Preview / filename modal ---------------- */
+  let pendingRecording = null; // {blob, url}
+
+  function defaultFilename(){
+    const ts = new Date();
+    const pad = n=>String(n).padStart(2,'0');
+    return `launch-angle-${ts.getFullYear()}${pad(ts.getMonth()+1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}`;
+  }
+
+  function openPreview(blob){
+    const url = URL.createObjectURL(blob);
+    pendingRecording = { blob, url };
+    previewVideo.src = url;
+    filenameInput.value = defaultFilename();
+    previewModal.style.display = 'flex';
+  }
+
+  function closePreview(revokeNow){
+    previewModal.style.display = 'none';
+    previewVideo.pause();
+    previewVideo.removeAttribute('src');
+    previewVideo.load();
+    if(pendingRecording){
+      if(revokeNow) URL.revokeObjectURL(pendingRecording.url);
+      else setTimeout(()=>URL.revokeObjectURL(pendingRecording.url), 15000);
+    }
+    pendingRecording = null;
+  }
+
+  saveRecBtn.addEventListener('click', ()=>{
+    if(!pendingRecording) return;
+    let name = filenameInput.value.trim() || defaultFilename();
+    name = name.replace(/\.webm$/i, '');
+    const a = document.createElement('a');
+    a.href = pendingRecording.url;
+    a.download = name + '.webm';
+    document.body.appendChild(a); a.click(); a.remove();
+    closePreview(false);
+  });
+
+  discardRecBtn.addEventListener('click', ()=>{
+    closePreview(true);
   });
 
   /* ---------------- Drag vertex ---------------- */
