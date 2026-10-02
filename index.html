@@ -50,6 +50,15 @@
     overflow:hidden;
     touch-action:none;
   }
+  #flipWrap{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+  }
+  #flipWrap.mirrored{
+    transform: scaleX(-1);
+  }
   video{
     position:absolute;
     inset:0;
@@ -406,8 +415,10 @@
 <body>
 
 <div id="stage">
-  <video id="video" playsinline muted></video>
-  <svg class="overlay" id="overlay"></svg>
+  <div id="flipWrap">
+    <video id="video" playsinline muted></video>
+    <svg class="overlay" id="overlay"></svg>
+  </div>
 
   <div id="idleHint">
     <h1>發射角度對準器</h1>
@@ -453,6 +464,7 @@
     <button class="toggle gyro" id="gyroToggle">📐 陀螺儀水平校正</button>
     <button class="toggle" id="flipCompBtn" style="display:none;">校正方向反轉</button>
     <button class="toggle" id="switchCamBtn">切換前/後鏡頭</button>
+    <button class="toggle" id="displayMirrorToggle">⇋ 左右鏡像顯示</button>
   </div>
 
   <div class="row toggleRow" id="cameraSelectRow" style="display:none;">
@@ -528,6 +540,8 @@
   const gyroToggle = document.getElementById('gyroToggle');
   const flipCompBtn = document.getElementById('flipCompBtn');
   const switchCamBtn = document.getElementById('switchCamBtn');
+  const displayMirrorToggle = document.getElementById('displayMirrorToggle');
+  const flipWrap = document.getElementById('flipWrap');
   const gyroFine = document.getElementById('gyroFine');
   const gyroFineSlider = document.getElementById('gyroFineSlider');
   const gyroFineVal = document.getElementById('gyroFineVal');
@@ -568,7 +582,8 @@
     recordOverlay: true,
     cameras: [],
     selectedDeviceId: null,
-    quality: {width:1920, height:1080, fps:60}
+    quality: {width:1920, height:1080, fps:60},
+    displayMirror: false
   };
 
   function parseQualityValue(v){
@@ -681,6 +696,12 @@
     if(state.isRecording) stopRecording();
     state.selectedDeviceId = cameraSelect.value;
     await startCamera();
+  });
+
+  displayMirrorToggle.addEventListener('click', ()=>{
+    state.displayMirror = !state.displayMirror;
+    flipWrap.classList.toggle('mirrored', state.displayMirror);
+    displayMirrorToggle.classList.toggle('on', state.displayMirror);
   });
 
   qualitySelect.addEventListener('change', async ()=>{
@@ -1057,8 +1078,11 @@
   /* ---------------- Drag vertex ---------------- */
   function clientToContent(clientX, clientY){
     const rect = stage.getBoundingClientRect();
-    const x = clientX - rect.left;
+    let x = clientX - rect.left;
     const y = clientY - rect.top;
+    // 畫面鏡像顯示時，手指點的位置要換算回「未鏡像」的邏輯座標，
+    // 才能對應到實際畫在 SVG / 錄影畫面裡的真實座標。
+    if(state.displayMirror) x = rect.width - x;
     return {x,y};
   }
 
