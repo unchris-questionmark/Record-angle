@@ -58,7 +58,6 @@
     object-fit:contain;
     background:#000;
   }
-  video.mirror{ transform: scaleX(-1); }
   svg.overlay{
     position:absolute;
     inset:0;
@@ -328,7 +327,7 @@
     font-weight:700;
   }
 
-  #cameraSelect{
+  #cameraSelect, #qualitySelect{
     flex:1 1 auto;
     background:var(--panel-2);
     border:1px solid var(--line);
@@ -336,6 +335,12 @@
     font-size:13px;
     padding:9px 8px;
     border-radius:9px;
+  }
+  #qualityActual{
+    font-size:11px;
+    color:var(--text-dim);
+    text-align:center;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
 
   /* ---------- Recording preview modal ---------- */
@@ -439,7 +444,7 @@
   </div>
 
   <div class="row toggleRow">
-    <button class="toggle" id="mirrorToggle">⇋ 左右鏡像</button>
+    <button class="toggle" id="mirrorToggle">⇋ 角度線方向(左/右)</button>
     <button class="toggle on" id="protractorToggle">量角器刻度</button>
     <button class="toggle" id="resetVertexBtn">重設準星/大小</button>
   </div>
@@ -453,6 +458,18 @@
   <div class="row toggleRow" id="cameraSelectRow" style="display:none;">
     <select id="cameraSelect"></select>
   </div>
+
+  <div class="row toggleRow">
+    <select id="qualitySelect">
+      <option value="1920x1080x60">1920×1080・60fps</option>
+      <option value="1920x1080x30">1920×1080・30fps</option>
+      <option value="1280x720x60">1280×720・60fps</option>
+      <option value="1280x720x30">1280×720・30fps</option>
+      <option value="640x480x60">640×480・60fps</option>
+      <option value="auto">自動（瀏覽器預設）</option>
+    </select>
+  </div>
+  <div id="qualityActual">要求：—　實際：—</div>
 
   <div class="row toggleRow">
     <button class="toggle on" id="recordOverlayToggle">角度標示錄進影片</button>
@@ -521,6 +538,8 @@
   const recordOverlayToggle = document.getElementById('recordOverlayToggle');
   const cameraSelectRow = document.getElementById('cameraSelectRow');
   const cameraSelect = document.getElementById('cameraSelect');
+  const qualitySelect = document.getElementById('qualitySelect');
+  const qualityActual = document.getElementById('qualityActual');
   const previewModal = document.getElementById('previewModal');
   const previewVideo = document.getElementById('previewVideo');
   const filenameInput = document.getElementById('filenameInput');
@@ -548,8 +567,15 @@
     actualFps: 30,
     recordOverlay: true,
     cameras: [],
-    selectedDeviceId: null
+    selectedDeviceId: null,
+    quality: {width:1920, height:1080, fps:60}
   };
+
+  function parseQualityValue(v){
+    if(v === 'auto') return null;
+    const [w,h,f] = v.split('x').map(Number);
+    return {width:w, height:h, fps:f};
+  }
 
   function setStatus(msg, isErr){
     statusEl.textContent = msg || '';
@@ -573,60 +599,38 @@
 
     setStatus('正在開啟相機…');
     try{
-      const videoConstraints = state.selectedDeviceId
-        ? {
-            deviceId: { exact: state.selectedDeviceId },
-            width:{ ideal: 1920 },
-            height:{ ideal: 1080 },
-            frameRate:{ ideal: 60, min: 30 }
-          }
-        : {
-            facingMode: { ideal: state.facingMode },
-            width:{ ideal: 1920 },
-            height:{ ideal: 1080 },
-            frameRate:{ ideal: 60, min: 30 }
-          };
+      const q = state.quality; // {width,height,fps} 或 null(自動)
+      const baseVideo = state.selectedDeviceId
+        ? { deviceId: { exact: state.selectedDeviceId } }
+        : { facingMode: { ideal: state.facingMode } };
+      const videoConstraints = q
+        ? Object.assign({}, baseVideo, {
+            width:{ ideal: q.width },
+            height:{ ideal: q.height },
+            frameRate:{ ideal: q.fps }
+          })
+        : baseVideo;
       const constraints = { audio:false, video: videoConstraints };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       state.stream = stream;
       video.srcObject = stream;
       await video.play();
-      video.classList.toggle('mirror', state.facingMode === 'user' && !state.selectedDeviceId);
       idleHint.style.display = 'none';
       readout.style.display = 'block';
       hint2.style.display = 'block';
       const track = stream.getVideoTracks()[0];
-      let settings = track && track.getSettings ? track.getSettings() : {};
+      const settings = track && track.getSettings ? track.getSettings() : {};
       state.actualFps = settings.frameRate ? Math.round(settings.frameRate) : 30;
-
-      // 部分裝置（尤其前鏡頭）在高解析度下協商不到 60fps，
-      // 嘗試用較低解析度換取更高幀率。
-      if(track && track.applyConstraints && state.actualFps < 55){
-        const fallbackResolutions = [
-          {width:1280, height:720},
-          {width:960, height:540},
-          {width:640, height:480}
-        ];
-        for(const res of fallbackResolutions){
-          try{
-            await track.applyConstraints({
-              width:{ ideal: res.width },
-              height:{ ideal: res.height },
-              frameRate:{ ideal: 60, min: 50 }
-            });
-            settings = track.getSettings();
-            const fps = settings.frameRate ? Math.round(settings.frameRate) : state.actualFps;
-            if(fps > state.actualFps) state.actualFps = fps;
-            if(state.actualFps >= 55) break;
-          }catch(e){ /* 該解析度不支援就跳過，嘗試下一個 */ }
-        }
-      }
-
       if(settings.deviceId) state.selectedDeviceId = settings.deviceId;
-      const fpsNote = state.actualFps < 55
-        ? `（此鏡頭在瀏覽器下最高只協商到 ${state.actualFps}fps，可能是裝置/系統對 WebRTC 擷取的限制）`
-        : '';
-      setStatus(settings.width ? `相機畫面：${settings.width}×${settings.height}，${state.actualFps} fps ${fpsNote}` : '');
+
+      // 如實顯示「實際協商到」的畫質/幀率 —— 這就是會被用來錄影的數值，
+      // 不會有畫面上寫的跟實際錄出來的不一樣的狀況。
+      const requestedTxt = q ? `${q.width}×${q.height}・${q.fps}fps` : '自動';
+      const actualTxt = settings.width ? `${settings.width}×${settings.height}・${state.actualFps}fps` : '（取得中）';
+      const mismatch = q && (settings.width !== q.width || state.actualFps < q.fps - 3);
+      qualityActual.textContent = `要求：${requestedTxt}　實際：${actualTxt}` + (mismatch ? '　(裝置不支援要求值，已自動降級)' : '');
+      setStatus('');
+
       computeContentRect();
       enumerateCameras();
     }catch(err){
@@ -677,6 +681,12 @@
     if(state.isRecording) stopRecording();
     state.selectedDeviceId = cameraSelect.value;
     await startCamera();
+  });
+
+  qualitySelect.addEventListener('change', async ()=>{
+    if(state.isRecording) stopRecording();
+    state.quality = parseQualityValue(qualitySelect.value);
+    if(state.stream) await startCamera();
   });
 
   recordOverlayToggle.addEventListener('click', ()=>{
